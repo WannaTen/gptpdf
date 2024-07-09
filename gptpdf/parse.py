@@ -9,7 +9,7 @@ import shapely.geometry as sg
 from shapely.geometry.base import BaseGeometry
 from shapely.validation import explain_validity
 import concurrent.futures
-
+import base64
 # This Default Prompt Using Chinese and could be changed to other languages.
 
 DEFAULT_PROMPT = """使用markdown语法，将图片中识别到的文字转换为markdown格式输出。你必须做到：
@@ -186,7 +186,8 @@ def _gpt_parse_images(
     """
     Parse images to markdown content.
     """
-    from GeneralAgent import Agent
+    # from GeneralAgent import Agent
+    from openai import AsyncOpenAI
 
     if isinstance(prompt_dict, dict) and 'prompt' in prompt_dict:
         prompt = prompt_dict['prompt']
@@ -206,15 +207,32 @@ def _gpt_parse_images(
     else:
         role_prompt = DEFAULT_ROLE_PROMPT
         logging.info("role_prompt is not provided, using default prompt.")
+    
+    # Function to encode the image
+    def encode_image(image_path):
+        with open(image_path, "rb") as image_file:
+            return base64.b64encode(image_file.read()).decode('utf-8')
 
-    def _process_page(index: int, image_info: Tuple[str, List[str]]) -> Tuple[int, str]:
+    async def _process_page(index: int, image_info: Tuple[str, List[str]]) -> Tuple[int, str]:
         logging.info(f'gpt parse page: {index}')
-        agent = Agent(role=role_prompt, api_key=api_key, base_url=base_url, model=model, disable_python_run=True)
+        client = AsyncOpenAI(api_key=api_key, base_url=base_url)
+        # agent = Agent(role=role_prompt, api_key=api_key, base_url=base_url, model=model, disable_python_run=True)
         page_image, rect_images = image_info
         local_prompt = prompt
         if rect_images:
             local_prompt += rect_prompt + ', '.join(rect_images)
-        content = agent.run([local_prompt, {'image': page_image}], show_stream=verbose)
+        images_prompt = [ {"type": "text", "text": {local_prompt}},]
+        base64_image = encode_image(page_image)
+        img_type = page_image.split('.')[-1]
+        images_prompt.append({"type": "image_url", "image_url": {
+            "url": f"data:image/{img_type};base64,{base64_image}"
+            }
+          }
+        )
+        prompts = [{'role': 'system', 'content': role_prompt}, {'role': 'user', 'content': images_prompt}]
+        # content = agent.run([local_prompt, {'image': page_image}], show_stream=verbose)
+        response = await client.chat.completions.create(model=model, messages=prompts, max_tokens=4096, temperature=0.0)
+        content = response.choices[0].message.content 
         return index, content
 
     contents = [None] * len(image_infos)
